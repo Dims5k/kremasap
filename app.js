@@ -86,31 +86,73 @@ function isNeutral(hex) {
 }
 const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
 
-/* Couleur dominante d'une photo, en ignorant le fond */
-function dominantColor(img) {
-  const N = 72, c = document.createElement("canvas"); c.width = c.height = N;
+/* Palette d'une photo : jusqu'à 3 couleurs avec leur proportion, en ignorant le fond */
+function extractPalette(img) {
+  const N = 80, c = document.createElement("canvas"); c.width = c.height = N;
   const x = c.getContext("2d", { willReadFrequently: true });
   x.drawImage(img, 0, 0, N, N);
-  const d = x.getImageData(0, 0, N, N).data;
+  return paletteFromPixels(x.getImageData(0, 0, N, N).data, N);
+}
+function paletteFromPixels(d, N) {
   const px = (i, j) => { const k = (j * N + i) * 4; return [d[k], d[k + 1], d[k + 2]]; };
-  let br = [0, 0, 0], bn = 0;
-  for (let i = 0; i < N; i++) for (const j of [0, 1, N - 2, N - 1]) {
-    for (const p of [px(i, j), px(j, i)]) { br[0] += p[0]; br[1] += p[1]; br[2] += p[2]; bn++; }
-  }
-  br = br.map(v => v / bn);
-  const buckets = new Map();
-  const m0 = Math.floor(N * .2), m1 = Math.ceil(N * .8);
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  // Fond : couleur moyenne du bord, si le bord est assez uniforme
+  const border = [];
+  for (let i = 0; i < N; i++) border.push(px(i, 0), px(i, N - 1), px(0, i), px(N - 1, i));
+  const bg = [0, 1, 2].map(k => border.reduce((a, p) => a + p[k], 0) / border.length);
+  const uniform = border.filter(p => dist(p, bg) < 40).length / border.length > .6;
+  const fg = [];
+  const m0 = Math.floor(N * .12), m1 = Math.ceil(N * .88);
   for (let j = m0; j < m1; j++) for (let i = m0; i < m1; i++) {
     const p = px(i, j);
-    if (Math.hypot(p[0] - br[0], p[1] - br[1], p[2] - br[2]) < 38) continue;
-    const key = (p[0] >> 5) << 6 | (p[1] >> 5) << 3 | (p[2] >> 5);
-    const b = buckets.get(key) || { n: 0, r: 0, g: 0, b: 0 };
-    b.n++; b.r += p[0]; b.g += p[1]; b.b += p[2]; buckets.set(key, b);
+    if (uniform && dist(p, bg) < 42) continue;
+    fg.push(p);
   }
-  let top = null;
-  for (const b of buckets.values()) if (!top || b.n > top.n) top = b;
-  if (!top || top.n < 20) { const p = px(N >> 1, N >> 1); return rgbToHex(...p); }
-  return rgbToHex(top.r / top.n, top.g / top.n, top.b / top.n);
+  if (fg.length < 40) { const p = px(N >> 1, N >> 1); const hex = rgbToHex(...p); return [{ hex, name: colorName(hex), share: 1 }]; }
+  // k-means (k=5), départ par points les plus éloignés
+  const K = Math.min(5, fg.length);
+  const cent = [fg[Math.floor(fg.length / 2)]];
+  while (cent.length < K) {
+    let best = fg[0], bd = -1;
+    for (let i = 0; i < fg.length; i += 3) { const dd = Math.min(...cent.map(c => dist(c, fg[i]))); if (dd > bd) { bd = dd; best = fg[i]; } }
+    cent.push(best);
+  }
+  let assign = new Array(fg.length).fill(0);
+  for (let it = 0; it < 8; it++) {
+    for (let i = 0; i < fg.length; i++) { let bi = 0, bd = Infinity; for (let k = 0; k < K; k++) { const dd = dist(fg[i], cent[k]); if (dd < bd) { bd = dd; bi = k; } } assign[i] = bi; }
+    for (let k = 0; k < K; k++) {
+      const m = fg.filter((_, i) => assign[i] === k);
+      if (m.length) cent[k] = [0, 1, 2].map(c => m.reduce((a, p) => a + p[c], 0) / m.length);
+    }
+  }
+  let cl = cent.map((c, k) => ({ rgb: c, n: assign.filter(a => a === k).length })).filter(c => c.n);
+  // Fusion des nuances d'une même couleur (ombres, plis)
+  const same = (a, b) => {
+    const ha = rgbToHex(...a.rgb), hb = rgbToHex(...b.rgb);
+    if (family(ha) === family(hb)) return true;
+    const na = isNeutral(ha), nb = isNeutral(hb);
+    if (!na && !nb && hueDist(hsl(ha)[0], hsl(hb)[0]) < 18) return true;
+    const [h1, s1] = hsl(ha), [h2, s2] = hsl(hb);
+    if (s1 > .3 && s2 > .3 && hueDist(h1, h2) < 15) return true;   // même teinte, plus ou moins à l'ombre
+    return dist(a.rgb, b.rgb) < 38;
+  };
+  cl.sort((a, b) => b.n - a.n);
+  const merged = [];
+  for (const c of cl) {
+    const m = merged.find(x => same(x, c));
+    if (m) { m.rgb = m.rgb.map((v, i) => (v * m.n + c.rgb[i] * c.n) / (m.n + c.n)); m.n += c.n; }
+    else merged.push({ ...c });
+  }
+  const total = merged.reduce((a, c) => a + c.n, 0);
+  return merged.sort((a, b) => b.n - a.n)
+    .map(c => { const hex = rgbToHex(...c.rgb); return { hex, name: colorName(hex), share: c.n / total }; })
+    .filter((c, i) => i === 0 || c.share >= .1).slice(0, 3)
+    .map((c, _, arr) => ({ ...c, share: Math.round(c.share / arr.reduce((a, x) => a + x.share, 0) * 100) / 100 }));
+}
+/* Couleurs d'une pièce (anciennes fiches : une seule couleur) */
+function pieceColors(p) {
+  const list = p.colors?.length ? p.colors : [{ hex: p.hex, name: p.colorName, share: 1 }];
+  return list.filter((c, i) => i === 0 || c.share >= .1);
 }
 
 /* ---------- Images ---------- */
@@ -183,8 +225,8 @@ function render() {
     const m = document.createElement("div"); m.className = "meta";
     const s = document.createElement("strong"); s.textContent = it.name || "Sans nom"; m.appendChild(s);
     const t = document.createElement("div"); t.className = "tags";
-    const d = document.createElement("span"); d.className = "dot"; d.style.background = it.hex; t.appendChild(d);
-    const tx = document.createElement("span"); tx.textContent = [it.brand, it.colorName, it.style].filter(Boolean).join(" · ") + (it.ensemble ? " · ensemble" : ""); t.appendChild(tx);
+    for (const c of pieceColors(it)) { const d = document.createElement("span"); d.className = "dot"; d.style.background = c.hex; t.appendChild(d); }
+    const tx = document.createElement("span"); tx.textContent = [it.brand, pieceColors(it).map(c => c.name).join("/"), it.style].filter(Boolean).join(" · ") + (it.ensemble ? " · ensemble" : ""); t.appendChild(tx);
     m.appendChild(t); card.appendChild(m);
     card.onclick = () => openSheet(it);
     g.appendChild(card);
@@ -214,10 +256,10 @@ $("file").onchange = async e => {
   let r;
   try { r = await shrink(f); } catch { flash("Photo illisible, essaie une autre."); return; }
   pendingBlob = r.blob;
-  const hex = dominantColor(r.img);
-  openSheet(null, { hex, colorName: colorName(hex) });
+  const colors = extractPalette(r.img);
+  openSheet(null, { colors });
   if (getKey()) aiAnalyze(r.blob);
-  else $("aiStatus").textContent = "Couleur détectée automatiquement. Vérifie la catégorie et le style.";
+  else $("aiStatus").textContent = (colors.length > 1 ? colors.length + " couleurs détectées" : "Couleur détectée") + " automatiquement. Vérifie la catégorie et le style.";
 };
 function openSheet(it, guess = {}) {
   editing = it;
@@ -229,8 +271,8 @@ function openSheet(it, guess = {}) {
   $("fCat").value = it?.cat || "haut";
   $("fStyle").value = it?.style || "casual";
   $("fSeason").value = it?.season || "toutes";
-  $("fHex").value = it?.hex || guess.hex || "#333333";
-  $("fColorName").value = it?.colorName || guess.colorName || "";
+  sheetColors = (it ? pieceColors(it) : guess.colors || [{ hex: "#333333", name: "anthracite", share: 1 }]).map(c => ({ ...c }));
+  renderColors();
   $("fBrand").value = it?.brand || "";
   $("fPattern").value = it?.pattern || "uni";
   if (it) $("aiStatus").textContent = "";
@@ -256,7 +298,7 @@ function partnerCandidates(cat) {
      (cat === "veste" && (isTop(i.cat) || isBottom(i.cat)))));
 }
 function detectPartner() {
-  const brand = $("fBrand").value.trim().toLowerCase(), cat = $("fCat").value, fam = family($("fHex").value);
+  const brand = $("fBrand").value.trim().toLowerCase(), cat = $("fCat").value, fam = family(sheetColors[0]?.hex || "#333333");
   if (!brand || !SET_CATS.includes(cat)) return null;
   return partnerCandidates(cat).find(i => (i.brand || "").toLowerCase() === brand && family(i.hex) === fam) || null;
 }
@@ -279,13 +321,38 @@ function fillSetOptions(keepValue) {
   }
   sel.value = [...sel.options].some(o => o.value === v) ? v : "";
 }
-["fCat", "fBrand", "fHex"].forEach(id => $(id).addEventListener("change", () => fillSetOptions(id !== "fCat")));
+["fCat", "fBrand"].forEach(id => $(id).addEventListener("change", () => fillSetOptions(id !== "fCat")));
 $("fBrand").addEventListener("input", () => { if (!$("fSet").value) fillSetOptions(); });
 
 function closeSheet() { $("sheet").hidden = true; editing = null; pendingBlob = null; }
 $("cancel").onclick = closeSheet;
 $("sheet").addEventListener("click", e => { if (e.target === $("sheet")) closeSheet(); });
-$("fHex").addEventListener("input", () => { $("fColorName").value = colorName($("fHex").value); });
+
+/* ---------- Couleurs de la pièce (éditables) ---------- */
+let sheetColors = [];
+function renderColors() {
+  const box = $("fColors"); box.innerHTML = "";
+  sheetColors.forEach((c, i) => {
+    const row = document.createElement("div"); row.className = "crow";
+    const inp = document.createElement("input"); inp.type = "color"; inp.value = c.hex; inp.setAttribute("aria-label", "Teinte " + (i + 1));
+    const nm = document.createElement("input"); nm.type = "text"; nm.value = c.name || ""; nm.maxLength = 30; nm.setAttribute("aria-label", "Nom de la couleur " + (i + 1));
+    const sh = document.createElement("span"); sh.className = "share"; sh.textContent = i === 0 ? "principale" : Math.round(c.share * 100) + " %";
+    inp.addEventListener("input", () => { c.hex = inp.value; c.name = colorName(inp.value); nm.value = c.name; });
+    inp.addEventListener("change", () => fillSetOptions(true));
+    nm.addEventListener("input", () => { c.name = nm.value; });
+    row.append(inp, nm, sh);
+    if (sheetColors.length > 1) {
+      const rm = document.createElement("button"); rm.type = "button"; rm.className = "rm"; rm.textContent = "×"; rm.setAttribute("aria-label", "Retirer " + (c.name || "cette couleur"));
+      rm.onclick = () => { sheetColors.splice(i, 1); normShares(); renderColors(); fillSetOptions(true); };
+      row.appendChild(rm);
+    }
+    box.appendChild(row);
+  });
+  $("addColor").hidden = sheetColors.length >= 3;
+}
+function normShares() { const t = sheetColors.reduce((a, c) => a + (c.share || 0), 0) || 1; sheetColors.forEach(c => c.share = Math.round((c.share || 0) / t * 100) / 100); }
+$("addColor").onclick = () => { sheetColors.push({ hex: "#ffffff", name: "blanc", share: .2 }); normShares(); renderColors(); };
+
 
 async function saveItem(it) {
   await dbPut(it);
@@ -305,9 +372,10 @@ $("save").onclick = async () => {
     const oldEns = it.ensemble || null;
     Object.assign(it, {
       name: $("fName").value.trim() || "Sans nom", cat: $("fCat").value, style: $("fStyle").value,
-      season: $("fSeason").value, hex: $("fHex").value, colorName: $("fColorName").value.trim() || colorName($("fHex").value),
+      season: $("fSeason").value, colors: sheetColors.map(c => ({ hex: c.hex, name: (c.name || "").trim() || colorName(c.hex), share: c.share })),
       brand: $("fBrand").value.trim(), pattern: $("fPattern").value
     });
+    it.hex = it.colors[0].hex; it.colorName = it.colors[0].name;
     const partner = items.find(i => i.id === $("fSet").value);
     if (partner) {
       const ens = partner.ensemble || (oldEns && setMembers(oldEns).length <= 2 ? oldEns : null) || uid();
@@ -348,15 +416,22 @@ const clash = (a, b) => CLASH[a + "|" + b] ?? CLASH[b + "|" + a] ?? 0;
 const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 
 function analyseColors(pieces) {
-  const vivid = [], fams = new Set();
+  const vivid = [], fams = new Set(), multi = [];
   for (const p of pieces) {
-    if (isNeutral(p.hex)) { fams.add(family(p.hex)); continue; }
-    const [h] = hsl(p.hex);
-    const g = vivid.find(v => hueDist(v.h, h) < 25);
-    if (g) g.n++; else { vivid.push({ h, n: 1, name: p.colorName || colorName(p.hex) }); fams.add("v" + vivid.length); }
+    const hues = [];
+    for (const [ci, c] of pieceColors(p).entries()) {
+      if (isNeutral(c.hex)) { if (c.share >= .2) fams.add(family(c.hex)); continue; }
+      const [h] = hsl(c.hex);
+      if (!hues.some(x => hueDist(x, h) < 25)) hues.push(h);
+      const g = vivid.find(v => hueDist(v.h, h) < 25);
+      if (g) { if (!g.pieces.has(p.id)) { g.pieces.add(p.id); g.n++; } if (ci > 0) g.accentOf = p; }
+      else { vivid.push({ h, n: 1, name: c.name || colorName(c.hex), pieces: new Set([p.id]), accentOf: ci > 0 ? p : null }); fams.add("v" + vivid.length); }
+    }
+    if (hues.length >= 2) multi.push(p);
   }
-  return { vivid, fams };
+  return { vivid, fams, multi };
 }
+const innerOk = p => isNeutral(pieceColors(p)[0].hex) && !pieceColors(p).some(c => !isNeutral(c.hex) && c.share >= .2);
 /* Ensembles présents dans la tenue : complets ou cassés */
 function ensembleCheck(pieces) {
   const ids = new Set(pieces.map(p => p.id)), res = { complete: [], broken: 0 };
@@ -381,27 +456,39 @@ function scoreOutfit(o, ctx) {
   // Superposition : la couche intérieure doit être neutre
   if (o.layered) {
     const inner = pieces.find(p => p.cat === "haut");
-    if (!isNeutral(inner.hex)) return { score: -50, notes: [], theme: "clash" };
+    if (!innerOk(inner)) return { score: -50, notes: [], theme: "clash" };
     if (inner.pattern && inner.pattern !== "uni") sc -= 3;
   }
   // Couleurs : une seule couleur forte, 3 familles de couleurs maximum
-  const { vivid, fams } = analyseColors(pieces);
+  const { vivid, fams, multi } = analyseColors(pieces);
   let theme;
-  if (vivid.length >= 2) return { score: -50, notes: [], theme: "clash" };
-  if (vivid.length === 0) {
+  if (multi.length > 1) return { score: -50, notes: [], theme: "clash" };
+  if (multi.length === 1) {
+    // Pièce multicolore : c'est la pièce forte, le reste est neutre ou reprend une de ses couleurs
+    const m = multi[0];
+    if (vivid.some(g => !g.pieces.has(m.id))) return { score: -50, notes: [], theme: "clash" };
+    const echo = vivid.filter(g => g.n >= 2);
+    sc += 3 + echo.length * 1.5; theme = "multi";
+    notes.push(echo.length
+      ? `${cap(m.name)} est la pièce forte, et ${echo.map(g => "le " + g.name).join(" et ")} y fait écho ailleurs dans la tenue : c'est cohérent.`
+      : `${cap(m.name)} est la pièce forte avec ses couleurs ; tout le reste reste neutre pour la laisser parler.`);
+    o.multiName = m.name;
+  } else if (vivid.length >= 2) return { score: -50, notes: [], theme: "clash" };
+  else if (vivid.length === 0) {
     const ls = pieces.map(p => hsl(p.hex)[2]);
     if ([...fams].every(f => f === "noir")) { sc += 2.5; theme = "black"; notes.push("Total black : sobre, efficace, ça marche partout."); }
     else if (Math.max(...ls) - Math.min(...ls) < .15) { sc += 0.5; theme = "mono"; notes.push("Tout dans la même valeur : sobre, mais un peu plat."); }
     else { sc += 2.5; theme = "neutre"; notes.push("Uniquement des neutres avec un contraste clair/foncé : impossible de se tromper."); }
   } else {
     const v = vivid[0];
-    if (v.n >= 2) { sc += 3; theme = "ton"; notes.push(`Ton sur ton ${v.name} posé sur des neutres.`); }
+    if (v.n >= 2 && v.accentOf) { sc += 4.5; theme = "echo"; notes.push(`Le ${v.name} reprend le détail ${v.name} de « ${v.accentOf.name} » : la tenue est pensée, pas assemblée au hasard.`); }
+    else if (v.n >= 2) { sc += 3; theme = "ton"; notes.push(`Ton sur ton ${v.name} posé sur des neutres.`); }
     else { sc += 4; theme = "touche"; notes.push(`Des neutres et une seule couleur forte, le ${v.name} : c'est elle qui attire l'œil.`); }
   }
   if (fams.size > 3) sc -= 4;
   if (fams.has("noir") && fams.has("marron")) sc -= 2.5;
   // Motifs : un seul à la fois
-  const loud = pieces.filter(p => p.pattern && p.pattern !== "uni").length;
+  const loud = pieces.filter(p => (p.pattern && p.pattern !== "uni") || multi.includes(p)).length;
   if (loud > 1) return { score: -50, notes: [], theme: "clash" };
 
   // Ensembles
@@ -479,6 +566,8 @@ function tipFor(o, ctx) {
 const TITLES = {
   neutre: ["Neutre efficace", "Valeur sûre", "Basique maîtrisé"],
   black: ["Total black"],
+  multi: ["Pièce forte"],
+  echo: c => [`Écho ${c}`, `Rappel ${c}`],
   mono: ["Monochrome"],
   touche: c => [`Touche de ${c}`, `Accent ${c}`],
   ton: c => [`Ton sur ton ${c}`, `Camaïeu ${c}`],
@@ -540,7 +629,7 @@ function renderOutfits(list, ctx, extra) {
     const head = document.createElement("div"); head.className = "ohead";
     const h = document.createElement("h3"); h.textContent = o.title || titleFor(o.theme, o, i); head.appendChild(h);
     const pal = document.createElement("div"); pal.className = "palette";
-    for (const x of [...new Set(o.pieces.map(p => p.hex))]) { const s = document.createElement("i"); s.style.background = x; pal.appendChild(s); }
+    for (const x of [...new Set(o.pieces.flatMap(p => pieceColors(p).map(c => c.hex)))]) { const s = document.createElement("i"); s.style.background = x; pal.appendChild(s); }
     head.appendChild(pal); c.appendChild(head);
     const ps = document.createElement("div"); ps.className = "pieces";
     for (const p of o.pieces) { const d = document.createElement("div"); d.className = "piece"; d.appendChild(phEl(p)); const s = document.createElement("span"); s.textContent = p.name; d.appendChild(s); ps.appendChild(d); }
@@ -611,15 +700,18 @@ async function aiAnalyze(blob) {
     const r = await claude("claude-haiku-5-5", [
       { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
       { type: "text", text: `Tu es styliste. La photo montre UN vêtement ou accessoire. Réponds UNIQUEMENT en JSON:
-{"categorie": une valeur parmi ${JSON.stringify(CATS.map(c => c[0]))}, "nom": nom court en français (2 à 4 mots), "couleur": couleur dominante en français, "hex": "#rrggbb", "style": une valeur parmi ${JSON.stringify(STYLES)}, "saison": une valeur parmi ${JSON.stringify(SEASONS)}, "marque": marque si un logo ou une étiquette est lisible sinon "", "motif": "uni" ou "logo" (gros logo/imprimé) ou "motif" (rayures, carreaux...)}` }
+{"categorie": une valeur parmi ${JSON.stringify(CATS.map(c => c[0]))}, "nom": nom court en français (2 à 4 mots), "couleurs": [{"nom": couleur en français, "hex": "#rrggbb", "part": proportion de 0 à 1}] (1 à 3 couleurs de la pièce, la principale en premier, ignorer le fond; ne compter une couleur secondaire que si elle est bien visible: rayures, manches, logo imposant, colorblock), "style": une valeur parmi ${JSON.stringify(STYLES)}, "saison": une valeur parmi ${JSON.stringify(SEASONS)}, "marque": marque si un logo ou une étiquette est lisible sinon "", "motif": "uni" ou "logo" (gros logo/imprimé) ou "motif" (rayures, carreaux...)}` }
     ], 300);
     if ($("sheet").hidden) return;
     if (CATS.some(c => c[0] === r.categorie)) $("fCat").value = r.categorie;
     if (STYLES.includes(r.style)) $("fStyle").value = r.style;
     if (SEASONS.includes(r.saison)) $("fSeason").value = r.saison;
     if (r.nom && !$("fName").value) $("fName").value = String(r.nom).slice(0, 60);
-    if (/^#[0-9a-f]{6}$/i.test(r.hex || "")) $("fHex").value = r.hex;
-    if (r.couleur) $("fColorName").value = String(r.couleur).slice(0, 30);
+    const cs = (Array.isArray(r.couleurs) ? r.couleurs : []).filter(c => /^#[0-9a-f]{6}$/i.test(c?.hex || "")).slice(0, 3);
+    if (cs.length) {
+      sheetColors = cs.map(c => ({ hex: c.hex, name: String(c.nom || colorName(c.hex)).slice(0, 30), share: Number(c.part) > 0 ? Number(c.part) : 1 / cs.length }));
+      normShares(); renderColors();
+    }
     if (r.marque && !$("fBrand").value) $("fBrand").value = String(r.marque).slice(0, 30);
     if (["uni", "logo", "motif"].includes(r.motif)) $("fPattern").value = r.motif;
     fillSetOptions(true);
@@ -629,12 +721,12 @@ async function aiAnalyze(blob) {
   }
 }
 async function aiOutfits(ctx) {
-  const inv = items.map(i => ({ id: i.id, categorie: i.cat, nom: i.name, marque: i.brand || undefined, couleur: i.colorName, hex: i.hex, style: i.style, saison: i.season, motif: i.pattern || "uni", ensemble: i.ensemble || undefined }));
+  const inv = items.map(i => ({ id: i.id, categorie: i.cat, nom: i.name, marque: i.brand || undefined, couleurs: pieceColors(i).map(c => `${c.name} ${c.hex} ${Math.round(c.share * 100)}%`), style: i.style, saison: i.season, motif: i.pattern || "uni", ensemble: i.ensemble || undefined }));
   const occName = $("occ").selectedOptions[0].textContent, wxName = $("wx").selectedOptions[0].textContent;
   const r = await claude("claude-sonnet-5-5", `Tu es un styliste exigeant. Compose 3 tenues DIFFÉRENTES uniquement avec ces pièces (JSON):
 ${JSON.stringify(inv)}
 Contexte: occasion = ${occName}; météo = ${wxName}; style voulu = ${ctx.vibe || "au choix"}.${ctx.must ? ` La pièce d'id "${ctx.must}" doit figurer dans chaque tenue.` : ""}
-Règles STRICTES (codes vestimentaires classiques): 1 haut (haut ou pull), 1 bas, 1 paire de chaussures, veste si la météo le demande, accessoire si utile. UNE SEULE couleur forte par tenue, le reste en neutres (noir, blanc, gris, beige, camel, marine, jean, kaki, marron); jamais deux couleurs vives ensemble. Maximum 3 familles de couleurs. En superposition, la couche intérieure est TOUJOURS neutre et unie. Un seul motif ou gros logo par tenue. Les pièces qui partagent la même valeur "ensemble" se portent TOUJOURS ensemble (ne jamais casser un ensemble); choisis alors la veste et les chaussures qui vont avec. Pas de noir avec des chaussures marron. Pas de chaussures de ville avec un jogging. Cohérence de style et de saison. Mieux vaut moins de tenues qu'une tenue ratée.
+Règles STRICTES (codes vestimentaires classiques): 1 haut (haut ou pull), 1 bas, 1 paire de chaussures, veste si la météo le demande, accessoire si utile. UNE SEULE couleur forte par tenue (une pièce multicolore compte comme LA pièce forte : les autres pièces sont neutres ou reprennent exactement une de ses couleurs), le reste en neutres (noir, blanc, gris, beige, camel, marine, jean, kaki, marron); jamais deux couleurs vives ensemble. Maximum 3 familles de couleurs. En superposition, la couche intérieure est TOUJOURS neutre et unie. Un seul motif ou gros logo par tenue. Les pièces qui partagent la même valeur "ensemble" se portent TOUJOURS ensemble (ne jamais casser un ensemble); choisis alors la veste et les chaussures qui vont avec. Pas de noir avec des chaussures marron. Pas de chaussures de ville avec un jogging. Cohérence de style et de saison. Mieux vaut moins de tenues qu'une tenue ratée.
 Réponds UNIQUEMENT en JSON: {"tenues":[{"titre":"court","pieces":["id"],"pourquoi":"1-2 phrases","astuce":"un conseil concret"}],"manque":"pièce qui manque le plus, ou chaîne vide"}`, 1500);
   const byId = Object.fromEntries(items.map(i => [i.id, i]));
   const list = (r.tenues || []).map(t => ({ title: t.titre, why: t.pourquoi, tip: t.astuce, pieces: (t.pieces || []).filter(id => byId[id]).map(id => byId[id]) })).filter(t => t.pieces.length >= 2);

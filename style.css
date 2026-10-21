@@ -88,6 +88,13 @@ select,input[type=text],input[type=password]{font:500 16px var(--body);color:var
 @media (min-width:640px){.sheet{align-items:center}.sheet>div{border-radius:20px}}
 .preview{display:flex;gap:14px;align-items:flex-start}
 .preview .ph{flex:0 0 110px;width:110px;border-radius:12px}
+.colors{display:flex;flex-direction:column;gap:8px}
+.crow{display:flex;gap:8px;align-items:center;min-width:0}
+.crow input[type=color]{flex:none;width:44px;height:42px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:3px}
+.crow input[type=text]{flex:1;min-width:0}
+.crow .share{flex:none;font:500 11px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.04em;width:72px;text-align:right}
+.crow .rm{flex:none;width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:16px;cursor:pointer}
+.linkbtn{align-self:flex-start;border:0;background:none;color:var(--accent);font:600 14px var(--body);padding:4px 0;cursor:pointer;text-transform:none;letter-spacing:0}
 .colorrow{display:flex;gap:8px;align-items:center}
 .colorrow input[type=color]{flex:none;width:44px;height:42px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:3px}
 .actions{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;align-items:center}

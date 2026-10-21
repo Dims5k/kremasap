@@ -14,6 +14,8 @@ Pour l'installer comme une appli : dans Safari, *Partager → Sur l'écran d'acc
 ## Règles de style
 
 Le moteur applique des codes stricts :
+- jusqu'à 3 couleurs détectées par pièce avec leur proportion (rayures, logo, colorblock), modifiables dans la fiche ;
+- une pièce multicolore est la pièce forte : le reste est neutre ou reprend une de ses couleurs (écho) ;
 - une seule couleur forte par tenue, le reste en neutres (noir, blanc, gris, beige, camel, marine, jean, kaki, marron) ;
 - trois familles de couleurs au maximum, pas de noir avec des chaussures marron ;
 - en superposition, la couche intérieure est toujours neutre et unie ;
