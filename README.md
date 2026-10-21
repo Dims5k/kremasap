@@ -11,6 +11,16 @@ Ta garde-robe en photos, rangée par catégorie, et des propositions de tenues q
 
 Pour l'installer comme une appli : dans Safari, *Partager → Sur l'écran d'accueil* ; dans Chrome, *Installer l'application*.
 
+## Règles de style
+
+Le moteur applique des codes stricts :
+- une seule couleur forte par tenue, le reste en neutres (noir, blanc, gris, beige, camel, marine, jean, kaki, marron) ;
+- trois familles de couleurs au maximum, pas de noir avec des chaussures marron ;
+- en superposition, la couche intérieure est toujours neutre et unie ;
+- un seul motif ou gros logo par tenue ;
+- les **ensembles** (même marque, même couleur, haut + bas) se portent toujours complets ; Kremasap choisit la veste et les chaussures qui vont dessus. L'ensemble est détecté automatiquement quand tu renseignes la même marque et la même couleur ;
+- pas de chaussures de ville avec un jogging, pas de short au travail ou par froid.
+
 ## Données
 
 Tout reste **sur l'appareil** (IndexedDB). Chaque personne qui ouvre le site a sa propre garde-robe, rien n'est envoyé à un serveur.

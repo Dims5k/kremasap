@@ -184,7 +184,7 @@ function render() {
     const s = document.createElement("strong"); s.textContent = it.name || "Sans nom"; m.appendChild(s);
     const t = document.createElement("div"); t.className = "tags";
     const d = document.createElement("span"); d.className = "dot"; d.style.background = it.hex; t.appendChild(d);
-    const tx = document.createElement("span"); tx.textContent = [it.colorName, it.style].filter(Boolean).join(" · "); t.appendChild(tx);
+    const tx = document.createElement("span"); tx.textContent = [it.brand, it.colorName, it.style].filter(Boolean).join(" · ") + (it.ensemble ? " · ensemble" : ""); t.appendChild(tx);
     m.appendChild(t); card.appendChild(m);
     card.onclick = () => openSheet(it);
     g.appendChild(card);
@@ -231,27 +231,91 @@ function openSheet(it, guess = {}) {
   $("fSeason").value = it?.season || "toutes";
   $("fHex").value = it?.hex || guess.hex || "#333333";
   $("fColorName").value = it?.colorName || guess.colorName || "";
-  $("aiStatus").textContent = it ? "" : "";
+  $("fBrand").value = it?.brand || "";
+  $("fPattern").value = it?.pattern || "uni";
+  if (it) $("aiStatus").textContent = "";
+  fillSetOptions();
   $("delete").hidden = !it; resetDelete();
   $("saveErr").hidden = true;
   $("sheet").hidden = false;
 }
+
+/* ---------- Ensembles (ex. haut + bas Halo noir) ---------- */
+const SET_CATS = ["haut", "pull", "veste", "pantalon", "short"];
+const isTop = c => c === "haut" || c === "pull";
+const isBottom = c => c === "pantalon" || c === "short";
+const setMembers = ens => ens ? items.filter(i => i.ensemble === ens) : [];
+const NEUTRAL_FAMILY = { "noir": "noir", "anthracite": "noir", "gris": "gris", "gris clair": "gris", "blanc": "blanc", "écru": "blanc",
+  "beige": "beige", "camel": "beige", "marron": "marron", "chocolat": "marron", "kaki": "kaki", "vert olive": "kaki",
+  "bleu marine": "bleu foncé", "bleu brut": "bleu foncé", "bleu jean": "bleu jean" };
+const family = hex => { const n = colorName(hex); return NEUTRAL_FAMILY[n] || n; };
+function partnerCandidates(cat) {
+  const self = editing?.id;
+  return items.filter(i => i.id !== self && SET_CATS.includes(i.cat) && i.cat !== cat &&
+    ((isTop(cat) && (isBottom(i.cat) || i.cat === "veste")) || (isBottom(cat) && (isTop(i.cat) || i.cat === "veste")) ||
+     (cat === "veste" && (isTop(i.cat) || isBottom(i.cat)))));
+}
+function detectPartner() {
+  const brand = $("fBrand").value.trim().toLowerCase(), cat = $("fCat").value, fam = family($("fHex").value);
+  if (!brand || !SET_CATS.includes(cat)) return null;
+  return partnerCandidates(cat).find(i => (i.brand || "").toLowerCase() === brand && family(i.hex) === fam) || null;
+}
+function fillSetOptions(keepValue) {
+  const sel = $("fSet"), cat = $("fCat").value, hint = $("setHint");
+  const prev = keepValue ? sel.value : "";
+  sel.innerHTML = '<option value="">Aucun (pièce seule)</option>';
+  hint.hidden = true;
+  if (!SET_CATS.includes(cat)) { sel.disabled = true; return; }
+  sel.disabled = false;
+  for (const i of partnerCandidates(cat)) {
+    const o = document.createElement("option"); o.value = i.id;
+    o.textContent = [i.name, i.brand].filter(Boolean).join(" — "); sel.appendChild(o);
+  }
+  let v = prev;
+  if (!v && editing?.ensemble) v = setMembers(editing.ensemble).find(m => m.id !== editing.id)?.id || "";
+  if (!v && !editing?.ensemble) {
+    const d = detectPartner();
+    if (d) { v = d.id; hint.textContent = `Ensemble détecté : même marque et même couleur que « ${d.name} ». Choisis « Aucun » si ce n'est pas le cas.`; hint.hidden = false; }
+  }
+  sel.value = [...sel.options].some(o => o.value === v) ? v : "";
+}
+["fCat", "fBrand", "fHex"].forEach(id => $(id).addEventListener("change", () => fillSetOptions(id !== "fCat")));
+$("fBrand").addEventListener("input", () => { if (!$("fSet").value) fillSetOptions(); });
+
 function closeSheet() { $("sheet").hidden = true; editing = null; pendingBlob = null; }
 $("cancel").onclick = closeSheet;
 $("sheet").addEventListener("click", e => { if (e.target === $("sheet")) closeSheet(); });
 $("fHex").addEventListener("input", () => { $("fColorName").value = colorName($("fHex").value); });
 
+async function saveItem(it) {
+  await dbPut(it);
+  const i = items.findIndex(x => x.id === it.id);
+  if (i >= 0) items[i] = it; else items.unshift(it);
+}
+/* Un ensemble à un seul membre n'en est plus un */
+async function cleanupSet(ens) {
+  const m = setMembers(ens);
+  if (m.length === 1) await saveItem({ ...m[0], ensemble: null });
+}
+
 $("save").onclick = async () => {
   const b = $("save"); b.disabled = true;
   try {
     const it = editing ? { ...editing } : { id: uid(), created: Date.now(), photo: pendingBlob };
+    const oldEns = it.ensemble || null;
     Object.assign(it, {
       name: $("fName").value.trim() || "Sans nom", cat: $("fCat").value, style: $("fStyle").value,
-      season: $("fSeason").value, hex: $("fHex").value, colorName: $("fColorName").value.trim() || colorName($("fHex").value)
+      season: $("fSeason").value, hex: $("fHex").value, colorName: $("fColorName").value.trim() || colorName($("fHex").value),
+      brand: $("fBrand").value.trim(), pattern: $("fPattern").value
     });
-    await dbPut(it);
-    const i = items.findIndex(x => x.id === it.id);
-    if (i >= 0) items[i] = it; else items.unshift(it);
+    const partner = items.find(i => i.id === $("fSet").value);
+    if (partner) {
+      const ens = partner.ensemble || (oldEns && setMembers(oldEns).length <= 2 ? oldEns : null) || uid();
+      it.ensemble = ens;
+      if (partner.ensemble !== ens) await saveItem({ ...partner, ensemble: ens });
+    } else it.ensemble = null;
+    await saveItem(it);
+    if (oldEns && oldEns !== it.ensemble) await cleanupSet(oldEns);
     closeSheet(); render();
   } catch (err) {
     const e = $("saveErr"); e.textContent = "Impossible d'enregistrer. Vérifie l'espace disponible sur ton téléphone."; e.hidden = false;
@@ -262,14 +326,15 @@ function resetDelete() { const d = $("delete"); d.textContent = "Supprimer"; del
 $("delete").onclick = async () => {
   const d = $("delete");
   if (!d.dataset.armed) { d.dataset.armed = "1"; d.textContent = "Confirmer ?"; setTimeout(() => { if (d.dataset.armed) resetDelete(); }, 3000); return; }
-  const id = editing.id;
+  const id = editing.id, ens = editing.ensemble;
   await dbDel(id); dropUrl(id);
   items = items.filter(x => x.id !== id);
+  if (ens) await cleanupSet(ens);
   closeSheet(); render();
 };
 function flash(t) { const s = $("oStatus"); show("w"); const g = $("grid"); const p = document.createElement("div"); p.className = "empty err"; p.textContent = t; g.prepend(p); setTimeout(() => p.remove(), 4000); }
 
-/* ---------- Moteur de tenues ---------- */
+/* ---------- Moteur de tenues (règles strictes) ---------- */
 const OCC = {
   quotidien: { casual: 2, streetwear: 2, classique: 1, chic: 0, sport: 0 },
   soiree: { chic: 2, streetwear: 2, casual: 1, classique: 1, sport: -3 },
@@ -278,39 +343,89 @@ const OCC = {
   sport: { sport: 3, casual: 2, streetwear: 1, chic: -4, classique: -4 },
   fete: { chic: 3, classique: 2, casual: -1, streetwear: -2, sport: -5 }
 };
-const CLASH = { "sport|chic": -4, "sport|classique": -4, "streetwear|classique": -1.5 };
+const CLASH = { "sport|chic": -5, "sport|classique": -5, "streetwear|classique": -2, "streetwear|chic": -0.5 };
 const clash = (a, b) => CLASH[a + "|" + b] ?? CLASH[b + "|" + a] ?? 0;
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 
 function analyseColors(pieces) {
-  const vivid = [], neutrals = new Set();
+  const vivid = [], fams = new Set();
   for (const p of pieces) {
-    if (isNeutral(p.hex)) { neutrals.add(colorName(p.hex)); continue; }
+    if (isNeutral(p.hex)) { fams.add(family(p.hex)); continue; }
     const [h] = hsl(p.hex);
-    const g = vivid.find(v => hueDist(v.h, h) < 28);
-    if (g) g.n++; else vivid.push({ h, n: 1, name: p.colorName || colorName(p.hex) });
+    const g = vivid.find(v => hueDist(v.h, h) < 25);
+    if (g) g.n++; else { vivid.push({ h, n: 1, name: p.colorName || colorName(p.hex) }); fams.add("v" + vivid.length); }
   }
-  return { vivid, neutrals };
+  return { vivid, fams };
 }
+/* Ensembles présents dans la tenue : complets ou cassés */
+function ensembleCheck(pieces) {
+  const ids = new Set(pieces.map(p => p.id)), res = { complete: [], broken: 0 };
+  for (const ens of new Set(pieces.map(p => p.ensemble).filter(Boolean))) {
+    const m = setMembers(ens);
+    const core = m.filter(x => isTop(x.cat) || isBottom(x.cat));
+    const worn = m.filter(x => ids.has(x.id));
+    const coreOk = core.every(x => ids.has(x.id));
+    const vestOrphan = worn.some(x => x.cat === "veste") && !core.filter(x => isBottom(x.cat)).every(x => ids.has(x.id));
+    if (coreOk && !vestOrphan) res.complete.push({ ens, members: worn });
+    else res.broken++;
+  }
+  return res;
+}
+
 function scoreOutfit(o, ctx) {
   const pieces = o.pieces; let sc = 0; const notes = [];
-  // Couleurs
-  const { vivid, neutrals } = analyseColors(pieces);
+  const shoes = pieces.find(p => p.cat === "chaussures");
+  const bottom = pieces.find(p => isBottom(p.cat));
+  const veste = pieces.find(p => p.cat === "veste");
+
+  // Superposition : la couche intérieure doit être neutre
+  if (o.layered) {
+    const inner = pieces.find(p => p.cat === "haut");
+    if (!isNeutral(inner.hex)) return { score: -50, notes: [], theme: "clash" };
+    if (inner.pattern && inner.pattern !== "uni") sc -= 3;
+  }
+  // Couleurs : une seule couleur forte, 3 familles de couleurs maximum
+  const { vivid, fams } = analyseColors(pieces);
   let theme;
+  if (vivid.length >= 2) return { score: -50, notes: [], theme: "clash" };
   if (vivid.length === 0) {
     const ls = pieces.map(p => hsl(p.hex)[2]);
-    if (Math.max(...ls) - Math.min(...ls) < .15) { sc += 0.5; theme = "mono"; notes.push("Ensemble monochrome : sobre, mais joue sur les matières pour éviter l'effet plat."); }
-    else { sc += 2.5; theme = "neutre"; notes.push("Base 100 % neutre avec du contraste clair/foncé : impossible de se tromper."); }
-  } else if (vivid.length === 1) {
+    if ([...fams].every(f => f === "noir")) { sc += 2.5; theme = "black"; notes.push("Total black : sobre, efficace, ça marche partout."); }
+    else if (Math.max(...ls) - Math.min(...ls) < .15) { sc += 0.5; theme = "mono"; notes.push("Tout dans la même valeur : sobre, mais un peu plat."); }
+    else { sc += 2.5; theme = "neutre"; notes.push("Uniquement des neutres avec un contraste clair/foncé : impossible de se tromper."); }
+  } else {
     const v = vivid[0];
-    if (v.n >= 2) { sc += 3; theme = "ton"; notes.push(`Ton sur ton autour du ${v.name}, posé sur des neutres : harmonieux et réfléchi.`); }
-    else { sc += 4; theme = "touche"; notes.push(`Des neutres et une seule touche de ${v.name} : c'est elle qui attire l'œil.`); }
-  } else if (vivid.length === 2) {
-    const d = hueDist(vivid[0].h, vivid[1].h);
-    if (d <= 45) { sc += 3; theme = "analogue"; notes.push(`${cap(vivid[0].name)} et ${vivid[1].name} sont voisins sur le cercle chromatique : accord doux et cohérent.`); }
-    else if (d >= 150) { sc += 2.5; theme = "comp"; notes.push(`${cap(vivid[0].name)} et ${vivid[1].name} sont complémentaires : contraste fort, à assumer.`); }
-    else { sc -= 4; theme = "clash"; notes.push(`${cap(vivid[0].name)} et ${vivid[1].name} se font concurrence.`); }
-  } else { sc -= 6; theme = "clash"; notes.push("Trop de couleurs vives à la fois."); }
-  if (neutrals.size > 3) sc -= 1;
+    if (v.n >= 2) { sc += 3; theme = "ton"; notes.push(`Ton sur ton ${v.name} posé sur des neutres.`); }
+    else { sc += 4; theme = "touche"; notes.push(`Des neutres et une seule couleur forte, le ${v.name} : c'est elle qui attire l'œil.`); }
+  }
+  if (fams.size > 3) sc -= 4;
+  if (fams.has("noir") && fams.has("marron")) sc -= 2.5;
+  // Motifs : un seul à la fois
+  const loud = pieces.filter(p => p.pattern && p.pattern !== "uni").length;
+  if (loud > 1) return { score: -50, notes: [], theme: "clash" };
+
+  // Ensembles
+  const ensb = ensembleCheck(pieces);
+  if (ensb.broken) return { score: -50, notes: [], theme: "clash" };
+  for (const e of ensb.complete) {
+    sc += 6;
+    const brand = e.members.find(m => m.brand)?.brand;
+    notes.unshift(`Ensemble ${brand ? brand + " " : ""}porté complet : c'est la base de la tenue.`);
+    o.ensembleName = brand || e.members[0].colorName;
+    if (veste && !e.members.includes(veste)) {
+      if (isNeutral(veste.hex)) sc += 1.5;
+      if (Math.abs(hsl(veste.hex)[2] - hsl(e.members[0].hex)[2]) > .25) { sc += 1; notes.push(`La veste ${veste.colorName || ""} tranche avec l'ensemble et structure la silhouette.`); }
+    }
+  }
+  // Chaussures : neutres, ou reprise de la couleur forte
+  if (shoes) {
+    if (isNeutral(shoes.hex)) sc += 1;
+    else if (vivid[0]?.n >= 2) sc += 1.5;
+    if (bottom) {
+      if (bottom.style === "sport" && ["chic", "classique"].includes(shoes.style)) sc -= 7;
+      if (["chic", "classique"].includes(bottom.style) && shoes.style === "sport") sc -= 4;
+    }
+  }
 
   // Style
   const st = pieces.map(p => p.style);
@@ -318,7 +433,7 @@ function scoreOutfit(o, ctx) {
   if (new Set(st).size === 1) sc += 1.5;
   const occ = OCC[ctx.occ];
   sc += st.reduce((a, s) => a + (occ[s] ?? 0), 0) / st.length * 1.5;
-  if (ctx.vibe) sc += st.reduce((a, s) => a + (s === ctx.vibe ? 1.5 : s === "casual" ? 0 : -0.7), 0);
+  if (ctx.vibe) sc += st.reduce((a, s) => a + (s === ctx.vibe ? 1.5 : s === "casual" ? 0 : -0.8), 0);
 
   // Météo & saison
   const has = c => pieces.some(p => p.cat === c);
@@ -326,7 +441,7 @@ function scoreOutfit(o, ctx) {
   if (ctx.wx === "froid") {
     if (has("short")) sc -= 10;
     if (!has("pull") && !has("veste")) sc -= 5;
-    if (has("veste")) sc += 2; if (o.layered) sc += 2;
+    if (has("veste")) sc += 2; if (o.layered) sc += 1.5;
     sc -= season.filter(s => s === "été").length * 2;
   } else if (ctx.wx === "chaud") {
     if (has("pull")) sc -= 3;
@@ -340,39 +455,39 @@ function scoreOutfit(o, ctx) {
   } else {
     if (has("short")) sc -= 2;
     if (has("veste") || o.layered) sc += 1;
-    sc -= season.filter(s => s === "hiver").length * 0.5;
+    sc -= season.filter(s => s === "hiver").length * 1.5;
   }
-  if (has("short") && ["travail", "fete", "soiree"].includes(ctx.occ)) sc -= 5;
+  if (has("short") && ["travail", "fete", "soiree"].includes(ctx.occ)) sc -= 6;
 
   return { score: sc, notes, theme };
 }
-const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 
-function tipFor(o, ctx, theme) {
+function tipFor(o, ctx) {
   const p = o.pieces;
   const shoes = p.find(x => x.cat === "chaussures");
-  if (o.layered) return "Laisse dépasser le bas et le col du haut sous le pull pour montrer la superposition.";
-  if (shoes && !isNeutral(shoes.hex)) return "Les chaussures portent la couleur : garde le reste sobre et le pantalon bien ajusté sur la cheville.";
-  if (theme === "mono") return "Mélange les textures (maille, denim, cuir) pour donner du relief.";
-  const top = p.find(x => x.cat === "haut" || x.cat === "pull"), bot = p.find(x => x.cat === "pantalon" || x.cat === "short");
+  if (o.ensembleName) return "Porte l'ensemble tel quel, sans le casser : ce sont la veste et les chaussures qui font la différence.";
+  if (o.layered) { const inner = p.find(x => x.cat === "haut"); return `Le ${inner.name.toLowerCase()} reste discret sous le pull : seul le col dépasse, pour une superposition propre.`; }
+  if (shoes && !isNeutral(shoes.hex)) return "Les chaussures portent la couleur : garde le reste sobre et le bas bien ajusté sur la cheville.";
+  if (o.theme === "mono" || o.theme === "black") return "Mélange les matières (maille, denim, cuir) pour donner du relief.";
+  const top = p.find(x => isTop(x.cat)), bot = p.find(x => isBottom(x.cat));
   if (top && bot && hsl(top.hex)[2] - hsl(bot.hex)[2] > .3) return "Haut clair et bas foncé : la silhouette paraît plus élancée.";
   if (ctx.occ === "travail") return "Rentre le haut dans le pantalon et ajoute une ceinture assortie aux chaussures.";
   if (ctx.occ === "soiree" || ctx.occ === "rdv") return "Un accessoire discret (montre, chaîne fine) suffit à finir la tenue.";
   if (p.some(x => x.cat === "veste")) return "Porte la veste ouverte pour laisser voir le haut.";
-  return "Retrousse légèrement le bas du pantalon si tes chaussures le méritent.";
+  return "Fais attention à la longueur du bas : il doit tomber juste sur la chaussure, sans plis.";
 }
 const TITLES = {
   neutre: ["Neutre efficace", "Valeur sûre", "Basique maîtrisé"],
-  mono: ["Monochrome", "Ton unique"],
+  black: ["Total black"],
+  mono: ["Monochrome"],
   touche: c => [`Touche de ${c}`, `Accent ${c}`],
   ton: c => [`Ton sur ton ${c}`, `Camaïeu ${c}`],
-  analogue: ["Duo harmonieux", "Accord doux"],
-  comp: ["Contraste assumé", "Complémentaires"],
   clash: ["Audacieux"]
 };
 function titleFor(theme, o, i) {
+  if (o.ensembleName) return "Ensemble " + o.ensembleName;
   const { vivid } = analyseColors(o.pieces);
-  let t = TITLES[theme];
+  let t = TITLES[theme] || TITLES.neutre;
   if (typeof t === "function") t = t(vivid[0]?.name || "couleur");
   return t[i % t.length];
 }
@@ -431,7 +546,7 @@ function renderOutfits(list, ctx, extra) {
     for (const p of o.pieces) { const d = document.createElement("div"); d.className = "piece"; d.appendChild(phEl(p)); const s = document.createElement("span"); s.textContent = p.name; d.appendChild(s); ps.appendChild(d); }
     c.appendChild(ps);
     const w = document.createElement("p"); w.className = "why"; w.textContent = o.why || o.notes.join(" "); c.appendChild(w);
-    const t = document.createElement("p"); t.className = "tip"; t.textContent = o.tip || tipFor(o, ctx, o.theme); c.appendChild(t);
+    const t = document.createElement("p"); t.className = "tip"; t.textContent = o.tip || tipFor(o, ctx); c.appendChild(t);
     out.appendChild(c);
   });
   if (extra) { const m = document.createElement("p"); m.className = "note"; m.textContent = extra; out.appendChild(m); }
@@ -496,7 +611,7 @@ async function aiAnalyze(blob) {
     const r = await claude("claude-haiku-5-5", [
       { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
       { type: "text", text: `Tu es styliste. La photo montre UN vêtement ou accessoire. Réponds UNIQUEMENT en JSON:
-{"categorie": une valeur parmi ${JSON.stringify(CATS.map(c => c[0]))}, "nom": nom court en français (2 à 4 mots), "couleur": couleur dominante en français, "hex": "#rrggbb", "style": une valeur parmi ${JSON.stringify(STYLES)}, "saison": une valeur parmi ${JSON.stringify(SEASONS)}}` }
+{"categorie": une valeur parmi ${JSON.stringify(CATS.map(c => c[0]))}, "nom": nom court en français (2 à 4 mots), "couleur": couleur dominante en français, "hex": "#rrggbb", "style": une valeur parmi ${JSON.stringify(STYLES)}, "saison": une valeur parmi ${JSON.stringify(SEASONS)}, "marque": marque si un logo ou une étiquette est lisible sinon "", "motif": "uni" ou "logo" (gros logo/imprimé) ou "motif" (rayures, carreaux...)}` }
     ], 300);
     if ($("sheet").hidden) return;
     if (CATS.some(c => c[0] === r.categorie)) $("fCat").value = r.categorie;
@@ -505,18 +620,21 @@ async function aiAnalyze(blob) {
     if (r.nom && !$("fName").value) $("fName").value = String(r.nom).slice(0, 60);
     if (/^#[0-9a-f]{6}$/i.test(r.hex || "")) $("fHex").value = r.hex;
     if (r.couleur) $("fColorName").value = String(r.couleur).slice(0, 30);
+    if (r.marque && !$("fBrand").value) $("fBrand").value = String(r.marque).slice(0, 30);
+    if (["uni", "logo", "motif"].includes(r.motif)) $("fPattern").value = r.motif;
+    fillSetOptions(true);
     $("aiStatus").textContent = "Fiche remplie par Claude. Corrige si besoin.";
   } catch (e) {
     $("aiStatus").textContent = "Claude n'a pas pu analyser la photo (" + e.message + "). Couleur détectée automatiquement.";
   }
 }
 async function aiOutfits(ctx) {
-  const inv = items.map(i => ({ id: i.id, categorie: i.cat, nom: i.name, couleur: i.colorName, hex: i.hex, style: i.style, saison: i.season }));
+  const inv = items.map(i => ({ id: i.id, categorie: i.cat, nom: i.name, marque: i.brand || undefined, couleur: i.colorName, hex: i.hex, style: i.style, saison: i.season, motif: i.pattern || "uni", ensemble: i.ensemble || undefined }));
   const occName = $("occ").selectedOptions[0].textContent, wxName = $("wx").selectedOptions[0].textContent;
   const r = await claude("claude-sonnet-5-5", `Tu es un styliste exigeant. Compose 3 tenues DIFFÉRENTES uniquement avec ces pièces (JSON):
 ${JSON.stringify(inv)}
 Contexte: occasion = ${occName}; météo = ${wxName}; style voulu = ${ctx.vibe || "au choix"}.${ctx.must ? ` La pièce d'id "${ctx.must}" doit figurer dans chaque tenue.` : ""}
-Règles: 1 haut (haut ou pull, superposition possible), 1 bas, 1 paire de chaussures, veste si la météo le demande, accessoire si utile. Maximum 3 couleurs principales, base de neutres + 1 couleur forte au plus, harmonies ton sur ton, analogues ou complémentaires. Cohérence de style et de saison. Mieux vaut moins de tenues qu'une tenue ratée.
+Règles STRICTES (codes vestimentaires classiques): 1 haut (haut ou pull), 1 bas, 1 paire de chaussures, veste si la météo le demande, accessoire si utile. UNE SEULE couleur forte par tenue, le reste en neutres (noir, blanc, gris, beige, camel, marine, jean, kaki, marron); jamais deux couleurs vives ensemble. Maximum 3 familles de couleurs. En superposition, la couche intérieure est TOUJOURS neutre et unie. Un seul motif ou gros logo par tenue. Les pièces qui partagent la même valeur "ensemble" se portent TOUJOURS ensemble (ne jamais casser un ensemble); choisis alors la veste et les chaussures qui vont avec. Pas de noir avec des chaussures marron. Pas de chaussures de ville avec un jogging. Cohérence de style et de saison. Mieux vaut moins de tenues qu'une tenue ratée.
 Réponds UNIQUEMENT en JSON: {"tenues":[{"titre":"court","pieces":["id"],"pourquoi":"1-2 phrases","astuce":"un conseil concret"}],"manque":"pièce qui manque le plus, ou chaîne vide"}`, 1500);
   const byId = Object.fromEntries(items.map(i => [i.id, i]));
   const list = (r.tenues || []).map(t => ({ title: t.titre, why: t.pourquoi, tip: t.astuce, pieces: (t.pieces || []).filter(id => byId[id]).map(id => byId[id]) })).filter(t => t.pieces.length >= 2);

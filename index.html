@@ -103,6 +103,18 @@
       </label>
       <label for="fSeason">Saison<select id="fSeason"></select></label>
     </div>
+    <div class="row">
+      <label for="fBrand">Marque<input type="text" id="fBrand" placeholder="Ex. Halo" maxlength="30"></label>
+      <label for="fPattern">Motif<select id="fPattern">
+        <option value="uni">Uni</option><option value="logo">Gros logo / imprimé</option><option value="motif">Motif (rayures, carreaux…)</option>
+      </select></label>
+    </div>
+    <div class="row">
+      <label for="fSet">Ensemble avec
+        <select id="fSet"><option value="">Aucun (pièce seule)</option></select>
+      </label>
+    </div>
+    <p class="note" id="setHint" hidden></p>
     <p class="err" id="saveErr" hidden></p>
     <div class="actions">
       <button class="btn danger" id="delete" hidden>Supprimer</button>
