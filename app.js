@@ -35,10 +35,22 @@ async function tx(mode, fn) {
     const out = fn(s);
     t.oncomplete = () => res(out && "result" in out ? out.result : undefined);
     t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error || new DOMException("Transaction annulée", "AbortError"));
   });
 }
-const dbAll = () => tx("readonly", s => s.getAll());
-const dbPut = it => tx("readwrite", s => s.put(it));
+/* Safari (iPhone) refuse souvent de stocker un Blob dans IndexedDB :
+   on enregistre la photo en ArrayBuffer et on la reconvertit au chargement. */
+async function toStored(it) {
+  const { photo, ...rest } = it;
+  if (photo instanceof Blob) return { ...rest, photoBuf: await photo.arrayBuffer(), photoType: photo.type || "image/jpeg" };
+  return { ...rest, photo: photo || null };
+}
+function fromStored(r) {
+  if (r.photoBuf) { const { photoBuf, photoType, ...rest } = r; return { ...rest, photo: new Blob([photoBuf], { type: photoType || "image/jpeg" }) }; }
+  return r;
+}
+const dbAll = async () => (await tx("readonly", s => s.getAll())).map(fromStored);
+const dbPut = async it => { const rec = await toStored(it); return tx("readwrite", s => s.put(rec)); };
 const dbDel = id => tx("readwrite", s => s.delete(id));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
@@ -386,7 +398,12 @@ $("save").onclick = async () => {
     if (oldEns && oldEns !== it.ensemble) await cleanupSet(oldEns);
     closeSheet(); render();
   } catch (err) {
-    const e = $("saveErr"); e.textContent = "Impossible d'enregistrer. Vérifie l'espace disponible sur ton téléphone."; e.hidden = false;
+    console.error(err);
+    const full = err?.name === "QuotaExceededError";
+    const e = $("saveErr");
+    e.textContent = full ? "Plus d'espace pour Kremasap sur ce téléphone. Supprime quelques pièces ou fais une sauvegarde."
+      : "Impossible d'enregistrer (" + (err?.name || "erreur") + (err?.message ? " : " + err.message : "") + ").";
+    e.hidden = false;
   }
   b.disabled = false;
 };
