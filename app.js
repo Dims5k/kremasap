@@ -40,12 +40,30 @@ async function tx(mode, fn) {
 }
 /* Safari (iPhone) refuse souvent de stocker un Blob dans IndexedDB :
    on enregistre la photo en ArrayBuffer et on la reconvertit au chargement. */
+async function blobBuf(photo, id) {
+  try { return await photo.arrayBuffer(); }
+  catch {
+    // Ancienne photo devenue illisible dans Safari : on la redessine depuis l'image affichée
+    const src = urlCache.get(id) || URL.createObjectURL(photo);
+    const im = await loadImage(src);
+    const c = document.createElement("canvas"); c.width = im.naturalWidth; c.height = im.naturalHeight;
+    c.getContext("2d").drawImage(im, 0, 0);
+    const b = await new Promise(r => c.toBlob(r, "image/jpeg", .85));
+    if (!b) throw new Error("photo");
+    return await b.arrayBuffer();
+  }
+}
 async function toStored(it) {
   const { photo, ...rest } = it;
-  if (photo instanceof Blob) return { ...rest, photoBuf: await photo.arrayBuffer(), photoType: photo.type || "image/jpeg" };
+  if (photo instanceof Blob) {
+    try { return { ...rest, photoBuf: await blobBuf(photo, it.id), photoType: "image/jpeg" }; }
+    catch { return { ...rest, photo: null, photoLost: true }; }   // on garde la fiche même si la photo est perdue
+  }
   return { ...rest, photo: photo || null };
 }
+const legacy = new Set();   // fiches encore stockées en Blob (ancien format)
 function fromStored(r) {
+  if (r.photo instanceof Blob) legacy.add(r.id);
   if (r.photoBuf) { const { photoBuf, photoType, ...rest } = r; return { ...rest, photo: new Blob([photoBuf], { type: photoType || "image/jpeg" }) }; }
   return r;
 }
@@ -812,5 +830,7 @@ $("importFile").onchange = async e => {
     return;
   }
   render();
+  // Convertit en arrière-plan les anciennes fiches au format compatible iPhone
+  for (const it of items.filter(i => legacy.has(i.id))) { try { await dbPut(it); legacy.delete(it.id); } catch { } }
 })();
 if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => { }));
