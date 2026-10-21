@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kremasap</title>
+<meta name="description" content="Ta garde-robe en photos et des tenues qui respectent les accords de couleurs.">
+<meta name="theme-color" content="#2B47D6">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Kremasap<span>.</span></h1>
+      <p class="sub">Photographie tes vêtements, Kremasap les range. Choisis l'occasion, il assemble des tenues avec ce que tu as.</p>
+    </div>
+    <button class="icon-btn" id="openSettings" aria-label="Réglages">⚙</button>
+  </header>
+
+  <div class="views" role="tablist">
+    <button role="tab" id="tabW" aria-selected="true">Garde-robe <b id="count">0</b></button>
+    <button role="tab" id="tabO" aria-selected="false">Tenues</button>
+  </div>
+
+  <section id="viewW" class="stack">
+    <div class="chips" id="chips"></div>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <section id="viewO" class="stack" hidden>
+    <div class="panel">
+      <div class="row">
+        <label for="occ">Occasion
+          <select id="occ">
+            <option value="quotidien">Quotidien</option>
+            <option value="soiree">Soirée / sortie</option>
+            <option value="travail">Travail / entretien</option>
+            <option value="rdv">Rendez-vous</option>
+            <option value="sport">Sport / chill</option>
+            <option value="fete">Mariage / fête</option>
+          </select>
+        </label>
+        <label for="wx">Météo
+          <select id="wx">
+            <option value="froid">Froid (moins de 10°C)</option>
+            <option value="doux" selected>Doux (10–18°C)</option>
+            <option value="chaud">Chaud (plus de 18°C)</option>
+            <option value="pluie">Pluie</option>
+          </select>
+        </label>
+        <label for="vibe">Style
+          <select id="vibe">
+            <option value="">Peu importe</option>
+            <option value="casual">Casual</option>
+            <option value="streetwear">Streetwear</option>
+            <option value="chic">Chic</option>
+            <option value="classique">Classique</option>
+            <option value="sport">Sport</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label for="must">Pièce imposée
+          <select id="must"><option value="">Aucune</option></select>
+        </label>
+      </div>
+      <div class="row between">
+        <span class="status" id="oStatus"></span>
+        <button class="btn" id="go">Proposer 3 tenues</button>
+      </div>
+    </div>
+    <div class="outfits" id="outfits"></div>
+  </section>
+</div>
+
+<button class="fab" id="add"><span aria-hidden="true">+</span> Ajouter</button>
+<input type="file" id="file" accept="image/*" capture="environment" hidden>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+
+<!-- Fiche vêtement -->
+<div class="sheet" id="sheet" hidden>
+  <div role="dialog" aria-labelledby="sheetT">
+    <h2 id="sheetT">Nouveau vêtement</h2>
+    <div class="preview">
+      <div class="ph" id="pv"></div>
+      <p class="status" id="aiStatus"></p>
+    </div>
+    <div class="row"><label for="fName">Nom<input type="text" id="fName" placeholder="Ex. Jean brut slim" maxlength="60"></label></div>
+    <div class="row">
+      <label for="fCat">Catégorie<select id="fCat"></select></label>
+      <label for="fStyle">Style<select id="fStyle"></select></label>
+    </div>
+    <div class="row">
+      <label for="fColorName">Couleur
+        <span class="colorrow"><input type="color" id="fHex" value="#333333" aria-label="Teinte"><input type="text" id="fColorName" placeholder="Ex. bleu marine" maxlength="30"></span>
+      </label>
+      <label for="fSeason">Saison<select id="fSeason"></select></label>
+    </div>
+    <p class="err" id="saveErr" hidden></p>
+    <div class="actions">
+      <button class="btn danger" id="delete" hidden>Supprimer</button>
+      <span style="flex:1"></span>
+      <button class="btn ghost" id="cancel">Annuler</button>
+      <button class="btn" id="save">Ranger</button>
+    </div>
+  </div>
+</div>
+
+<!-- Réglages -->
+<div class="sheet" id="settings" hidden>
+  <div role="dialog" aria-labelledby="setT">
+    <h2 id="setT">Réglages</h2>
+    <div class="panel inner">
+      <h3>Sauvegarde</h3>
+      <p class="note">Ta garde-robe est enregistrée uniquement sur cet appareil. Exporte-la de temps en temps pour ne rien perdre, ou pour la transférer sur un autre téléphone.</p>
+      <div class="actions left">
+        <button class="btn ghost" id="exportBtn">Exporter ma garde-robe</button>
+        <button class="btn ghost" id="importBtn">Importer une sauvegarde</button>
+      </div>
+      <p class="status" id="backupStatus"></p>
+    </div>
+    <div class="panel inner">
+      <h3>IA Claude (optionnel)</h3>
+      <p class="note">Sans clé, Kremasap détecte la couleur et compose les tenues avec son propre moteur. Avec une clé API Anthropic, l'IA remplit aussi la fiche à partir de la photo et rédige des tenues plus fines. La clé reste sur cet appareil. Chaque utilisation est facturée sur ton compte Anthropic.</p>
+      <label for="apiKey" class="lbl">Clé API<input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"></label>
+      <div class="actions left">
+        <button class="btn ghost" id="saveKey">Enregistrer la clé</button>
+        <button class="btn ghost" id="clearKey">Retirer la clé</button>
+      </div>
+      <p class="status" id="keyStatus"></p>
+    </div>
+    <div class="actions"><button class="btn" id="closeSettings">Fermer</button></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
