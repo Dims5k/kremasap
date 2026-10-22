@@ -785,7 +785,7 @@ $("go").onclick = async () => {
   const ctx = { occ: $("occ").value, wx: $("wx").value, vibe: $("vibe").value, must: $("must").value };
   const go = $("go"); go.disabled = true;
   if (getKey()) {
-    st.innerHTML = '<span class="spin"></span> Claude compose tes tenues…';
+    st.innerHTML = '<span class="spin"></span> ' + aiLabel() + ' compose tes tenues…';
     try { await aiOutfits(ctx); st.textContent = ""; }
     catch (e) { st.textContent = "L'IA n'a pas répondu (" + e.message + "). Tenues calculées par le moteur intégré."; renderLocal(ctx); }
   } else { renderLocal(ctx); }
@@ -802,7 +802,26 @@ function renderLocal(ctx) {
 /* ---------- IA Claude (optionnel, clé de l'utilisateur) ---------- */
 const KEY = "kremasap.apikey";
 function getKey() { try { return localStorage.getItem(KEY) || ""; } catch { return ""; } }
+/* Fournisseur selon la clé : Google Gemini (gratuit, « AIza… ») ou Anthropic Claude (« sk-ant-… ») */
+const isGemini = () => getKey().startsWith("AIza");
+const aiLabel = () => isGemini() ? "Gemini" : "Claude";
+const parseJson = text => { const m = (text || "").match(/\{[\s\S]*\}/); if (!m) throw new Error("réponse illisible"); return JSON.parse(m[0]); };
+async function gemini(content, maxTokens) {
+  const parts = (Array.isArray(content) ? content : [{ type: "text", text: content }]).map(c =>
+    c.type === "image" ? { inline_data: { mime_type: c.source.media_type, data: c.source.data } } : { text: c.text });
+  const body = JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json", maxOutputTokens: Math.max(maxTokens, 2048), temperature: .4 } });
+  let last;
+  for (const model of ["gemini-flash-latest", "gemini-2.5-flash"]) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(getKey())}`, { method: "POST", headers: { "content-type": "application/json" }, body });
+    if (r.status === 404) { last = "modèle indisponible"; continue; }
+    if (!r.ok) throw new Error(r.status === 400 || r.status === 403 ? "clé invalide" : r.status === 429 ? "limite gratuite atteinte, réessaie plus tard" : "erreur " + r.status);
+    const j = await r.json();
+    return parseJson((j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(""));
+  }
+  throw new Error(last || "aucun modèle");
+}
 async function claude(model, content, maxTokens = 1200) {
+  if (isGemini()) return gemini(content, maxTokens);
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -813,10 +832,7 @@ async function claude(model, content, maxTokens = 1200) {
   });
   if (!r.ok) throw new Error(r.status === 401 ? "clé invalide" : r.status === 429 ? "trop de demandes" : "erreur " + r.status);
   const j = await r.json();
-  const text = (j.content || []).map(c => c.text || "").join("");
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("réponse illisible");
-  return JSON.parse(m[0]);
+  return parseJson((j.content || []).map(c => c.text || "").join(""));
 }
 const blobToB64 = b => new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(String(f.result).split(",")[1]); f.onerror = rej; f.readAsDataURL(b); });
 
@@ -830,7 +846,7 @@ async function aiRead(blob) {
 }
 const aiColors = r => (Array.isArray(r.couleurs) ? r.couleurs : []).filter(c => /^#[0-9a-f]{6}$/i.test(c?.hex || "")).slice(0, 3);
 async function aiAnalyze(blob) {
-  $("aiStatus").innerHTML = '<span class="spin"></span> Claude analyse la pièce…';
+  $("aiStatus").innerHTML = '<span class="spin"></span> ' + aiLabel() + ' analyse la pièce…';
   try {
     const r = await aiRead(blob);
     if ($("sheet").hidden) return;
@@ -846,9 +862,9 @@ async function aiAnalyze(blob) {
     if (r.marque && !$("fBrand").value) $("fBrand").value = String(r.marque).slice(0, 30);
     if (["uni", "logo", "motif"].includes(r.motif)) $("fPattern").value = r.motif;
     fillSetOptions(true);
-    $("aiStatus").textContent = "Fiche remplie par Claude. Corrige si besoin.";
+    $("aiStatus").textContent = "Fiche remplie par " + aiLabel() + ". Corrige si besoin.";
   } catch (e) {
-    $("aiStatus").textContent = "Claude n'a pas pu analyser la photo (" + e.message + "). Couleur détectée automatiquement.";
+    $("aiStatus").textContent = aiLabel() + " n'a pas pu analyser la photo (" + e.message + "). Couleur détectée automatiquement.";
   }
 }
 /* ---------- Redétection (couleurs + marque) ---------- */
@@ -913,6 +929,7 @@ $("redetectAll").onclick = async () => {
       const upd = { ...it, colors: r.colors, hex: r.colors[0].hex, colorName: r.colors[0].name, brand: r.brand, pattern: r.pattern };
       await saveItem(upd); ok++;
     } catch { fail++; }
+    if (useAI && isGemini() && i < items.length - 1) await new Promise(r => setTimeout(r, 6500));   // limite gratuite : ~10 demandes/minute
   }
   render();
   st.textContent = `${ok} pièce(s) mises à jour, ${brands} marque(s) ajoutée(s)` + (fail ? `, ${fail} sans photo lisible` : "") + ".";
@@ -942,7 +959,7 @@ $("closeSettings").onclick = () => { $("settings").hidden = true; };
 $("settings").addEventListener("click", e => { if (e.target === $("settings")) $("settings").hidden = true; });
 $("saveKey").onclick = () => {
   const k = $("apiKey").value.trim();
-  if (!k.startsWith("sk-ant-")) { $("keyStatus").textContent = "Une clé Anthropic commence par « sk-ant- »."; $("keyStatus").className = "status err"; return; }
+  if (!k.startsWith("sk-ant-") && !k.startsWith("AIza")) { $("keyStatus").textContent = "Colle une clé Gemini (« AIza… ») ou Anthropic (« sk-ant-… »)."; $("keyStatus").className = "status err"; return; }
   try { localStorage.setItem(KEY, k); $("keyStatus").textContent = "Clé enregistrée."; $("keyStatus").className = "status okc"; $("apiKey").value = ""; }
   catch { $("keyStatus").textContent = "Impossible d'enregistrer la clé sur ce navigateur."; $("keyStatus").className = "status err"; }
 };

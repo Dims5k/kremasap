@@ -142,14 +142,15 @@
     </div>
     <div class="panel inner">
       <h3>Mettre à jour ma garde-robe</h3>
-      <p class="note">Recalcule la couleur de toutes tes pièces à partir des photos, et retrouve la marque quand elle est écrite dans le nom (« Sweat Jordan » → Jordan). Le nom, la catégorie et le style ne bougent pas. Avec une clé IA, Claude lit aussi les logos sur les photos (une analyse facturée par pièce).</p>
+      <p class="note">Recalcule la couleur de toutes tes pièces à partir des photos, et retrouve la marque quand elle est écrite dans le nom (« Sweat Jordan » → Jordan). Le nom, la catégorie et le style ne bougent pas. Avec une clé IA, l'IA lit aussi les logos sur les photos (une analyse par pièce : gratuite avec Gemini, mais plus lente pour respecter la limite gratuite).</p>
       <div class="actions left"><button class="btn ghost" id="redetectAll">Tout redétecter</button></div>
       <p class="status" id="redetectStatus"></p>
     </div>
     <div class="panel inner">
-      <h3>IA Claude (optionnel)</h3>
-      <p class="note">Sans clé, Kremasap détecte la couleur et compose les tenues avec son propre moteur. Avec une clé API Anthropic, l'IA remplit aussi la fiche à partir de la photo et rédige des tenues plus fines. La clé reste sur cet appareil. Chaque utilisation est facturée sur ton compte Anthropic.</p>
-      <label for="apiKey" class="lbl">Clé API<input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"></label>
+      <h3>IA (optionnel)</h3>
+      <p class="note">Sans clé, Kremasap détecte la couleur et compose les tenues avec son propre moteur. Avec une clé, l'IA lit les logos, remplit la fiche depuis la photo et rédige des tenues plus fines. La clé reste sur cet appareil.</p>
+      <p class="note"><strong>Gratuit : Google Gemini.</strong> Crée une clé sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> (compte Google, sans carte bancaire), puis colle-la ici. Limite : un nombre de demandes par jour, et Google peut utiliser tes photos pour améliorer ses produits. <strong>Payant : Anthropic Claude</strong> (clé « sk-ant-… »), facturé à l'usage.</p>
+      <label for="apiKey" class="lbl">Clé API<input type="password" id="apiKey" placeholder="AIza… ou sk-ant-…" autocomplete="off"></label>
       <div class="actions left">
         <button class="btn ghost" id="saveKey">Enregistrer la clé</button>
         <button class="btn ghost" id="clearKey">Retirer la clé</button>
