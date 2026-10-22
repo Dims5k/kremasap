@@ -91,6 +91,7 @@
     <div class="preview">
       <div class="ph" id="pv"></div>
       <p class="status" id="aiStatus"></p>
+      <button type="button" class="linkbtn" id="redetect" hidden>↻ Redétecter couleurs et marque</button>
     </div>
     <div class="row"><label for="fName">Nom<input type="text" id="fName" placeholder="Ex. Jean brut slim" maxlength="60"></label></div>
     <div class="row">
@@ -138,6 +139,12 @@
         <button class="btn ghost" id="importBtn">Importer une sauvegarde</button>
       </div>
       <p class="status" id="backupStatus"></p>
+    </div>
+    <div class="panel inner">
+      <h3>Mettre à jour ma garde-robe</h3>
+      <p class="note">Recalcule la couleur de toutes tes pièces à partir des photos, et retrouve la marque quand elle est écrite dans le nom (« Sweat Jordan » → Jordan). Le nom, la catégorie et le style ne bougent pas. Avec une clé IA, Claude lit aussi les logos sur les photos (une analyse facturée par pièce).</p>
+      <div class="actions left"><button class="btn ghost" id="redetectAll">Tout redétecter</button></div>
+      <p class="status" id="redetectStatus"></p>
     </div>
     <div class="panel inner">
       <h3>IA Claude (optionnel)</h3>
