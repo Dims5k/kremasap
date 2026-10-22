@@ -803,7 +803,7 @@ function renderLocal(ctx) {
 const KEY = "kremasap.apikey";
 function getKey() { try { return localStorage.getItem(KEY) || ""; } catch { return ""; } }
 /* Fournisseur selon la clé : Google Gemini (gratuit, « AIza… ») ou Anthropic Claude (« sk-ant-… ») */
-const isGemini = () => getKey().startsWith("AIza");
+const isGemini = () => { const k = getKey(); return !!k && !k.startsWith("sk-ant-"); };
 const aiLabel = () => isGemini() ? "Gemini" : "Claude";
 const parseJson = text => { const m = (text || "").match(/\{[\s\S]*\}/); if (!m) throw new Error("réponse illisible"); return JSON.parse(m[0]); };
 async function gemini(content, maxTokens) {
@@ -814,7 +814,12 @@ async function gemini(content, maxTokens) {
   for (const model of ["gemini-flash-latest", "gemini-2.5-flash"]) {
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(getKey())}`, { method: "POST", headers: { "content-type": "application/json" }, body });
     if (r.status === 404) { last = "modèle indisponible"; continue; }
-    if (!r.ok) throw new Error(r.status === 400 || r.status === 403 ? "clé invalide" : r.status === 429 ? "limite gratuite atteinte, réessaie plus tard" : "erreur " + r.status);
+    if (!r.ok) {
+      let msg = ""; try { msg = (await r.json()).error?.message || ""; } catch { }
+      if (r.status === 429) throw new Error("limite gratuite atteinte, réessaie plus tard");
+      if (/api key|API_KEY|permission|PERMISSION/i.test(msg) || r.status === 403) throw new Error("clé invalide ou API non activée");
+      throw new Error("erreur " + r.status + (msg ? " : " + msg.slice(0, 120) : ""));
+    }
     const j = await r.json();
     return parseJson((j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(""));
   }
@@ -958,10 +963,16 @@ $("openSettings").onclick = () => {
 $("closeSettings").onclick = () => { $("settings").hidden = true; };
 $("settings").addEventListener("click", e => { if (e.target === $("settings")) $("settings").hidden = true; });
 $("saveKey").onclick = () => {
-  const k = $("apiKey").value.trim();
-  if (!k.startsWith("sk-ant-") && !k.startsWith("AIza")) { $("keyStatus").textContent = "Colle une clé Gemini (« AIza… ») ou Anthropic (« sk-ant-… »)."; $("keyStatus").className = "status err"; return; }
-  try { localStorage.setItem(KEY, k); $("keyStatus").textContent = "Clé enregistrée."; $("keyStatus").className = "status okc"; $("apiKey").value = ""; }
-  catch { $("keyStatus").textContent = "Impossible d'enregistrer la clé sur ce navigateur."; $("keyStatus").className = "status err"; }
+  // Nettoie le copier-coller : espaces, retours à la ligne, guillemets, caractères invisibles
+  const k = $("apiKey").value.replace(/[\s"'«»“”‘’\u200B-\u200D\uFEFF]/g, "");
+  if (k.length < 20) { $("keyStatus").textContent = "La clé semble incomplète : recopie-la en entier depuis Google AI Studio."; $("keyStatus").className = "status err"; return; }
+  try { localStorage.setItem(KEY, k); $("apiKey").value = ""; }
+  catch { $("keyStatus").textContent = "Impossible d'enregistrer la clé sur ce navigateur."; $("keyStatus").className = "status err"; return; }
+  // Test immédiat de la clé
+  const ks = $("keyStatus"); ks.className = "status"; ks.innerHTML = '<span class="spin"></span> Vérification de la clé ' + aiLabel() + '…';
+  claude("claude-haiku-5-5", 'Réponds uniquement {"ok":true}', 50)
+    .then(() => { ks.textContent = "Clé " + aiLabel() + " enregistrée et fonctionnelle."; ks.className = "status okc"; })
+    .catch(e => { ks.textContent = "Clé enregistrée, mais " + aiLabel() + " la refuse (" + e.message + "). Vérifie-la sur Google AI Studio."; ks.className = "status err"; });
 };
 $("clearKey").onclick = () => { try { localStorage.removeItem(KEY); } catch { } $("keyStatus").textContent = "Clé retirée."; $("keyStatus").className = "status"; };
 
