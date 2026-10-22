@@ -302,10 +302,25 @@ function paletteFromPixels(d, N) {
   merged.sort((a, b) => b.n - a.n);
   for (let i = merged.length - 1; i > 0; i--) if (isBgLike(merged[i])) merged.splice(i, 1);
   const total = merged.reduce((a, c) => a + c.n, 0);
-  return merged.sort((a, b) => b.n - a.n)
+  const res = merged.sort((a, b) => b.n - a.n)
     .map(c => { const hex = rgbToHex(...c.rgb); return { hex, name: colorName(hex), share: c.n / total }; })
     .filter((c, i) => i === 0 || c.share >= .1).slice(0, 3)
     .map((c, _, arr) => ({ ...c, share: Math.round(c.share / arr.reduce((a, x) => a + x.share, 0) * 100) / 100 }));
+  res.bg = borderCols;   // couleurs du fond, pour contrôler les couleurs proposées par l'IA
+  return res;
+}
+/* Couleurs de l'IA contrôlées par l'analyse de la photo : une couleur qui est celle du lit et pas du vêtement est retirée */
+function checkAiColors(ai, local) {
+  if (!local?.bg) return ai;
+  const lab = h => rgbToLab(...hexToRgb(h));
+  const dEh = (a, b) => { const x = lab(a), y = lab(b); return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]); };
+  const isBg = h => local.bg.some(b => { const x = lab(h); return Math.hypot(x[0] - b[0], x[1] - b[1], x[2] - b[2]) < 15; });
+  const inGarment = h => local.some(c => dEh(c.hex, h) < 14);
+  let out = ai.filter((c, i) => !isBg(c.hex) || inGarment(c.hex));
+  if (!out.length || (isBg(ai[0].hex) && !inGarment(ai[0].hex))) out = [local[0], ...out.filter(c => dEh(c.hex, local[0].hex) >= 14)];
+  out = out.slice(0, 3);
+  const t = out.reduce((a, c) => a + (c.share || 0), 0) || 1;
+  return out.map(c => ({ ...c, share: Math.round((c.share || 1 / out.length) / t * 100) / 100 }));
 }
 /* Couleurs d'une pièce (anciennes fiches : une seule couleur) */
 function pieceColors(p) {
@@ -416,7 +431,7 @@ $("file").onchange = async e => {
   pendingBlob = r.blob;
   const colors = extractPalette(r.img);
   openSheet(null, { colors });
-  if (getKey()) aiAnalyze(r.blob);
+  if (getKey()) aiAnalyze(r.blob, colors);
   else $("aiStatus").textContent = (colors.length > 1 ? colors.length + " couleurs détectées" : "Couleur détectée") + " automatiquement. Vérifie la catégorie et le style.";
 };
 function openSheet(it, guess = {}) {
@@ -917,11 +932,11 @@ async function aiRead(blob) {
   return claude("claude-haiku-5-5", [
       { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
       { type: "text", text: `Tu es styliste. La photo montre UN vêtement ou accessoire. Réponds UNIQUEMENT en JSON:
-{"categorie": une valeur parmi ${JSON.stringify(CATS.map(c => c[0]))}, "nom": nom court en français (2 à 4 mots), "couleurs": [{"nom": couleur en français, "hex": "#rrggbb", "part": proportion de 0 à 1}] (1 à 3 couleurs de la pièce, la principale en premier, ignorer le fond; ne compter une couleur secondaire que si elle est bien visible: rayures, manches, logo imposant, colorblock), "style": une valeur parmi ${JSON.stringify(STYLES)}, "saison": une valeur parmi ${JSON.stringify(SEASONS)}, "marque": marque si un logo ou une étiquette est lisible sinon "", "motif": "uni" ou "logo" (gros logo/imprimé) ou "motif" (rayures, carreaux...)}. Pour la marque, regarde bien les logos même sans texte (virgule Nike, Jumpman Jordan, trois bandes Adidas, crocodile Lacoste, joueur de polo Ralph Lauren…).` }
+{"categorie": une valeur parmi ${JSON.stringify(CATS.map(c => c[0]))}, "nom": nom court en français (2 à 4 mots), "couleurs": [{"nom": couleur en français, "hex": "#rrggbb", "part": proportion de 0 à 1}] (1 à 3 couleurs DU VÊTEMENT SEUL, la principale en premier ; le vêtement est souvent posé sur un lit, un plaid, un drap ou le sol : ces couleurs-là ne comptent JAMAIS, ni les mains, pieds ou meubles visibles ; dans le doute, une seule couleur ; ne compter une couleur secondaire que si elle est bien visible: rayures, manches, logo imposant, colorblock), "style": une valeur parmi ${JSON.stringify(STYLES)}, "saison": une valeur parmi ${JSON.stringify(SEASONS)}, "marque": marque si un logo ou une étiquette est lisible sinon "", "motif": "uni" ou "logo" (gros logo/imprimé) ou "motif" (rayures, carreaux...)}. Pour la marque, regarde bien les logos même sans texte (virgule Nike, Jumpman Jordan, trois bandes Adidas, crocodile Lacoste, joueur de polo Ralph Lauren…).` }
   ], 300);
 }
 const aiColors = r => (Array.isArray(r.couleurs) ? r.couleurs : []).filter(c => /^#[0-9a-f]{6}$/i.test(c?.hex || "")).slice(0, 3);
-async function aiAnalyze(blob) {
+async function aiAnalyze(blob, local) {
   $("aiStatus").innerHTML = '<span class="spin"></span> ' + aiLabel() + ' analyse la pièce…';
   try {
     const r = await aiRead(blob);
@@ -932,7 +947,7 @@ async function aiAnalyze(blob) {
     if (r.nom && !$("fName").value) $("fName").value = String(r.nom).slice(0, 60);
     const cs = aiColors(r);
     if (cs.length) {
-      sheetColors = cs.map(c => ({ hex: c.hex, name: String(c.nom || colorName(c.hex)).slice(0, 30), share: Number(c.part) > 0 ? Number(c.part) : 1 / cs.length, manual: !!c.nom }));
+      sheetColors = checkAiColors(cs.map(c => ({ hex: c.hex, name: String(c.nom || colorName(c.hex)).slice(0, 30), share: Number(c.part) > 0 ? Number(c.part) : 1 / cs.length, manual: !!c.nom })), local);
       normShares(); renderColors();
     }
     if (r.marque && !$("fBrand").value) $("fBrand").value = String(r.marque).slice(0, 30);
@@ -944,7 +959,7 @@ async function aiAnalyze(blob) {
   }
 }
 /* ---------- Redétection (couleurs + marque) ---------- */
-const BRANDS = ["Nike", "Jordan", "Adidas", "Puma", "New Balance", "Asics", "Reebok", "Fila", "Kappa", "Champion", "Ellesse", "Le Coq Sportif", "Sergio Tacchini", "Lacoste", "Ralph Lauren", "Tommy Hilfiger", "Calvin Klein", "Hugo Boss", "Boss", "Armani", "EA7", "Levi's", "Diesel", "Guess", "Zara", "H&M", "Uniqlo", "Pull&Bear", "Bershka", "Jack & Jones", "The North Face", "Stone Island", "Carhartt", "Napapijri", "Moncler", "Timberland", "Vans", "Converse", "Supreme", "Off-White", "Palm Angels", "Trapstar", "Corteiz", "Gucci", "Louis Vuitton", "Dior", "Balenciaga", "Prada", "Versace", "Burberry", "Kenzo", "Halo"];
+const BRANDS = ["Nike", "Jordan", "Adidas", "Puma", "New Balance", "Asics", "Reebok", "Fila", "Kappa", "Champion", "Ellesse", "Le Coq Sportif", "Sergio Tacchini", "Lacoste", "Ralph Lauren", "Tommy Hilfiger", "Calvin Klein", "Hugo Boss", "Boss", "Armani", "EA7", "Levi's", "Diesel", "Guess", "Zara", "H&M", "Uniqlo", "Pull&Bear", "Bershka", "Jack & Jones", "The North Face", "Stone Island", "Carhartt", "Napapijri", "Moncler", "Timberland", "Vans", "Converse", "Supreme", "Off-White", "Palm Angels", "Trapstar", "Corteiz", "Gucci", "Louis Vuitton", "Dior", "Balenciaga", "Prada", "Versace", "Burberry", "Kenzo", "Halo", "Alo", "Alo Yoga", "Lululemon", "Gymshark", "Under Armour", "Salomon", "Arc'teryx", "Represent", "Fear of God", "Essentials", "Stüssy", "Ami", "Sandro", "Celio", "Kiabi", "Primark", "Mango", "Asos", "Shein"];
 /* Marque déjà écrite dans le nom de la pièce (« Sweat Jordan » → Jordan) */
 function brandFromName(name) {
   const n = " " + (name || "").toLowerCase().replace(/[^a-z0-9&'éè]+/g, " ") + " ";
@@ -959,14 +974,14 @@ async function photoBlob(it) {
 async function redetect(it, useAI) {
   const blob = await photoBlob(it); if (!blob) throw new Error("pas de photo");
   const url = URL.createObjectURL(blob);
-  let colors;
-  try { colors = extractPalette(await loadImage(url)); } finally { URL.revokeObjectURL(url); }
+  let colors, local;
+  try { colors = local = extractPalette(await loadImage(url)); } finally { URL.revokeObjectURL(url); }
   let brand = it.brand || brandFromName(it.name), pattern = it.pattern || "uni";
   if (useAI) {
     try {
       const r = await aiRead(blob);
       const cs = aiColors(r);
-      if (cs.length) colors = cs.map(c => ({ hex: c.hex, name: String(c.nom || colorName(c.hex)).slice(0, 30), share: Number(c.part) > 0 ? Number(c.part) : 1 / cs.length }));
+      if (cs.length) colors = checkAiColors(cs.map(c => ({ hex: c.hex, name: String(c.nom || colorName(c.hex)).slice(0, 30), share: Number(c.part) > 0 ? Number(c.part) : 1 / cs.length })), local);
       if (!brand && r.marque) brand = String(r.marque).slice(0, 30);
       if (["uni", "logo", "motif"].includes(r.motif)) pattern = r.motif;
     } catch { }
