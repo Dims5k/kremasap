@@ -170,21 +170,88 @@ function extractPalette(img) {
   x.drawImage(img, 0, 0, N, N);
   return paletteFromPixels(x.getImageData(0, 0, N, N).data, N);
 }
+/* Isole le vêtement du fond (lit, sol, drap…) : renvoie un masque 1 = vêtement */
+function garmentMask(d, N) {
+  const n = N * N;
+  // 1. Flou léger pour lisser les textures (fausse fourrure, plis, grain)
+  const rgb = new Float32Array(n * 3);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    let r = 0, g = 0, b = 0, c = 0;
+    for (let y = Math.max(0, j - 1); y <= Math.min(N - 1, j + 1); y++) for (let x = Math.max(0, i - 1); x <= Math.min(N - 1, i + 1); x++) {
+      const k = (y * N + x) * 4; r += d[k]; g += d[k + 1]; b += d[k + 2]; c++;
+    }
+    const o = (j * N + i) * 3; rgb[o] = r / c; rgb[o + 1] = g / c; rgb[o + 2] = b / c;
+  }
+  const lab = new Array(n);
+  for (let p = 0; p < n; p++) lab[p] = rgbToLab(rgb[p * 3], rgb[p * 3 + 1], rgb[p * 3 + 2]);
+  const dE = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  // 2. Couleurs du fond = couleurs du bord de la photo (k-means k=5)
+  const bIdx = [];
+  for (let i = 0; i < N; i++) bIdx.push(i, (N - 1) * N + i, i * N, i * N + N - 1);
+  const bl = bIdx.map(p => lab[p]);
+  let cent = [bl[0]];
+  while (cent.length < 5) { let best = bl[0], bd = -1; for (const p of bl) { const m = Math.min(...cent.map(c => dE(c, p))); if (m > bd) { bd = m; best = p; } } cent.push(best); }
+  let asg = [];
+  for (let it = 0; it < 6; it++) {
+    asg = bl.map(p => { let bi = 0, bd = Infinity; cent.forEach((c, k) => { const v = dE(c, p); if (v < bd) { bd = v; bi = k; } }); return bi; });
+    cent = cent.map((c, k) => { const m = bl.filter((_, i) => asg[i] === k); return m.length ? [0, 1, 2].map(z => m.reduce((a, p) => a + p[z], 0) / m.length) : c; });
+  }
+  // Une couleur n'est du fond que si elle occupe une vraie part du bord (un jean qui touche le bord ne compte pas)
+  // …ni si elle domine le centre de la photo (là où est le vêtement)
+  const mid = [];
+  for (let y = N * .35 | 0; y < N * .65; y++) for (let x = N * .35 | 0; x < N * .65; x++) mid.push(lab[y * N + x]);
+  const borderCols = cent.filter((_, k) => asg.filter(a => a === k).length / bl.length >= .1);
+  const bgCols = cent.filter((c, k) => asg.filter(a => a === k).length / bl.length >= .1 && mid.filter(p => dE(c, p) < 9).length / mid.length < .3);
+  // 3. Remplissage depuis le bord : tout ce qui est relié au bord et proche d'une couleur du fond est du fond
+  const T = 13, bg = new Uint8Array(n), q = [];
+  const near = p => bgCols.some(c => dE(c, lab[p]) < T);
+  for (const p of bIdx) if (!bg[p] && near(p)) { bg[p] = 1; q.push(p); }
+  while (q.length) {
+    const p = q.pop(), x = p % N, y = (p / N) | 0;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const X = x + dx, Y = y + dy; if (X < 0 || Y < 0 || X >= N || Y >= N) continue;
+      const r = Y * N + X; if (bg[r]) continue;
+      if (near(r) || (dE(lab[r], lab[p]) < 4 && bgCols.some(c => dE(c, lab[r]) < T * 1.6))) { bg[r] = 1; q.push(r); }
+    }
+  }
+  // 4. Zones restantes : on garde le vêtement (grande zone, vers le centre), pas les bouts de pied ou de meuble
+  const comp = new Int32Array(n).fill(-1), sizes = [], cen = [];
+  for (let p = 0; p < n; p++) {
+    if (bg[p] || comp[p] >= 0) continue;
+    const id = sizes.length; let sz = 0, cs = 0; const st = [p]; comp[p] = id;
+    while (st.length) {
+      const c = st.pop(); sz++;
+      const x = c % N, y = (c / N) | 0;
+      if (Math.abs(x - N / 2) < N * .25 && Math.abs(y - N / 2) < N * .25) cs++;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const X = x + dx, Y = y + dy; if (X < 0 || Y < 0 || X >= N || Y >= N) continue;
+        const r = Y * N + X; if (!bg[r] && comp[r] < 0) { comp[r] = id; st.push(r); }
+      }
+    }
+    sizes.push(sz); cen.push(cs);
+  }
+  const score = sizes.map((s, i) => s * (1 + 3 * cen[i] / Math.max(1, s)));
+  const best = score.indexOf(Math.max(...score));
+  const mask = new Uint8Array(n);
+  if (best >= 0 && sizes[best] >= n * .05) {
+    for (let p = 0; p < n; p++) { const c = comp[p]; if (c >= 0 && (c === best || (cen[c] > 0 && sizes[c] >= sizes[best] * .3))) mask[p] = 1; }
+  } else {
+    // Rien de net : on prend le centre de la photo
+    for (let y = N * .3 | 0; y < N * .7; y++) for (let x = N * .3 | 0; x < N * .7; x++) mask[y * N + x] = 1;
+    return { mask, borderCols, lab };
+  }
+  // 5. On retire le liseré du contour (pixels mélangés vêtement/fond)
+  const er = mask.slice();
+  for (let p = 0; p < n; p++) if (mask[p]) { const x = p % N, y = (p / N) | 0; if (x && y && x < N - 1 && y < N - 1 && !(mask[p - 1] && mask[p + 1] && mask[p - N] && mask[p + N])) er[p] = 0; }
+  return { mask: er.reduce((a, v) => a + v, 0) > n * .03 ? er : mask, borderCols, lab };
+}
 function paletteFromPixels(d, N) {
   const px = (i, j) => { const k = (j * N + i) * 4; return [d[k], d[k + 1], d[k + 2]]; };
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-  // Fond : couleur moyenne du bord, si le bord est assez uniforme
-  const border = [];
-  for (let i = 0; i < N; i++) border.push(px(i, 0), px(i, N - 1), px(0, i), px(N - 1, i));
-  const bg = [0, 1, 2].map(k => border.reduce((a, p) => a + p[k], 0) / border.length);
-  const uniform = border.filter(p => dist(p, bg) < 40).length / border.length > .6;
-  const fg = [];
-  const m0 = Math.floor(N * .12), m1 = Math.ceil(N * .88);
-  for (let j = m0; j < m1; j++) for (let i = m0; i < m1; i++) {
-    const p = px(i, j);
-    if (uniform && dist(p, bg) < 42) continue;
-    fg.push(p);
-  }
+  // Fond (lit, sol, drap…) retiré : on ne garde que les pixels du vêtement
+  const { mask, borderCols } = garmentMask(d, N);
+  const fg = [], fgPos = [];
+  for (let p = 0; p < N * N; p++) if (mask[p]) { fg.push(px(p % N, (p / N) | 0)); fgPos.push(p); }
   if (fg.length < 40) { const p = px(N >> 1, N >> 1); const hex = rgbToHex(...p); return [{ hex, name: colorName(hex), share: 1 }]; }
   // k-means (k=5), départ par points les plus éloignés
   const K = Math.min(5, fg.length);
@@ -230,6 +297,10 @@ function paletteFromPixels(d, N) {
     const lit = g.slice(Math.floor(g.length * .35), Math.ceil(g.length * .9));
     m.rgb = [0, 1, 2].map(c => lit.reduce((a, p) => a + p[c], 0) / lit.length);
   });
+  // Une couleur secondaire qui ressemble au fond est un reste du lit, pas une couleur du vêtement
+  const isBgLike = c => { const l = rgbToLab(...c.rgb); return borderCols.some(b => Math.hypot(l[0] - b[0], l[1] - b[1], l[2] - b[2]) < 12); };
+  merged.sort((a, b) => b.n - a.n);
+  for (let i = merged.length - 1; i > 0; i--) if (isBgLike(merged[i])) merged.splice(i, 1);
   const total = merged.reduce((a, c) => a + c.n, 0);
   return merged.sort((a, b) => b.n - a.n)
     .map(c => { const hex = rgbToHex(...c.rgb); return { hex, name: colorName(hex), share: c.n / total }; })
